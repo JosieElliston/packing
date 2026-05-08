@@ -2,7 +2,7 @@ use std::ops;
 
 pub type Coord = f64;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct Vec2 {
     pub x: Coord,
     pub y: Coord,
@@ -54,12 +54,46 @@ impl Vec2 {
         Self::from_r_theta(1.0, theta)
     }
 
+    pub fn dot(self, rhs: Self) -> Coord {
+        self.x * rhs.x + self.y * rhs.y
+    }
+
     pub fn length_sq(self) -> Coord {
         self.x * self.x + self.y * self.y
     }
 
     pub fn length(self) -> Coord {
         self.length_sq().sqrt()
+    }
+
+    pub fn distance_sq(self, rhs: Self) -> Coord {
+        (self - rhs).length_sq()
+    }
+
+    pub fn distance(self, rhs: Self) -> Coord {
+        (self - rhs).length()
+    }
+
+    /// `None` if the length is zero.
+    pub fn normalized(self) -> Option<Self> {
+        let len = self.length();
+        if len == 0.0 { None } else { Some(self / len) }
+    }
+
+    /// rotated 90 degrees counterclockwise.
+    pub fn ccw(self) -> Self {
+        Self {
+            x: -self.y,
+            y: self.x,
+        }
+    }
+
+    /// rotated 90 degrees clockwise.
+    pub fn cw(self) -> Self {
+        Self {
+            x: self.y,
+            y: -self.x,
+        }
     }
 }
 
@@ -107,5 +141,52 @@ impl ops::Neg for Vec2 {
             x: -self.x,
             y: -self.y,
         }
+    }
+}
+
+impl ops::Mul<Coord> for Vec2 {
+    type Output = Self;
+
+    fn mul(self, rhs: Coord) -> Self {
+        Self {
+            x: self.x * rhs,
+            y: self.y * rhs,
+        }
+    }
+}
+
+impl ops::MulAssign<Coord> for Vec2 {
+    fn mul_assign(&mut self, rhs: Coord) {
+        self.x *= rhs;
+        self.y *= rhs;
+    }
+}
+
+impl ops::Mul<Vec2> for Coord {
+    type Output = Vec2;
+
+    fn mul(self, rhs: Vec2) -> Vec2 {
+        Vec2 {
+            x: self * rhs.x,
+            y: self * rhs.y,
+        }
+    }
+}
+
+impl ops::Div<Coord> for Vec2 {
+    type Output = Self;
+
+    fn div(self, rhs: Coord) -> Self {
+        Self {
+            x: self.x / rhs,
+            y: self.y / rhs,
+        }
+    }
+}
+
+impl ops::DivAssign<Coord> for Vec2 {
+    fn div_assign(&mut self, rhs: Coord) {
+        self.x /= rhs;
+        self.y /= rhs;
     }
 }

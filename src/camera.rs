@@ -152,9 +152,9 @@ impl fmt::Display for Window {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Camera {
-    real_mid: f64,
-    imag_mid: f64,
-    real_rad: f64,
+    pub real_mid: f64,
+    pub imag_mid: f64,
+    pub real_rad: f64,
 }
 impl Default for Camera {
     fn default() -> Self {

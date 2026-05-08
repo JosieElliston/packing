@@ -9,10 +9,13 @@ use eframe::egui::{
 
 use crate::{camera::*, sim::*};
 
+// TODO: rather than just having a drag handle at the center,
+// click and drag on square boundary to apply a force.
+
 fn main() -> eframe::Result {
     let mut sim = Sim::new();
 
-    let camera = Camera::new(0.0, 0.0, {
+    let mut camera = Camera::new(0.0, 0.0, {
         let aabb = sim.big_square.aabb();
         // really this should be based on the aspect ratio of the rect,
         // but i don't have access to it yet,
@@ -24,6 +27,13 @@ fn main() -> eframe::Result {
     // the mouse is down on this.
     let mut active_handle = None;
 
+    let mut k_c = 1.0;
+
+    // in world coords.
+    let mut offset_radius = 0.4;
+
+    let mut draw_gauss_map = true;
+
     eframe::run_ui_native(
         "packing",
         eframe::NativeOptions::default(),
@@ -33,7 +43,49 @@ fn main() -> eframe::Result {
                 .resizable(false)
                 .show_inside(ui, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        ui.label("settings");
+                        ui.group(|ui| {
+                            ui.label("camera controls");
+                            ui.add(
+                                egui::Slider::new(&mut camera.real_mid, -10.0..=10.0)
+                                    .text("center x")
+                                    .clamping(egui::SliderClamping::Never),
+                            );
+                            ui.add(
+                                egui::Slider::new(&mut camera.imag_mid, -10.0..=10.0)
+                                    .text("center y")
+                                    .clamping(egui::SliderClamping::Never),
+                            );
+                            ui.add(
+                                egui::Slider::new(&mut camera.real_rad, 0.1..=10.0)
+                                    .text("radius")
+                                    .clamping(egui::SliderClamping::Never),
+                            );
+                        });
+
+                        ui.group(|ui| {
+                            ui.label("sim settings");
+                            ui.add(
+                                egui::Slider::new(&mut k_c, 0.1..=1000.0)
+                                    .text("k_c")
+                                    .clamping(egui::SliderClamping::Never)
+                                    .logarithmic(true),
+                            );
+
+                            ui.add(
+                                egui::Slider::new(&mut offset_radius, 0.0..=1.0)
+                                    .text("offset radius")
+                                    .clamping(egui::SliderClamping::Never),
+                            );
+
+                            if ui.button("step").clicked() {
+                                sim.step(k_c, offset_radius);
+                            }
+                        });
+
+                        ui.group(|ui| {
+                            ui.label("debug visualizations");
+                            ui.checkbox(&mut draw_gauss_map, "draw gauss map");
+                        });
                     })
                 });
 
@@ -70,6 +122,37 @@ fn main() -> eframe::Result {
                             .map(|(i, _dist_sq)| i)
                     })
                 };
+
+                // apply the interaction if there is an `active_handle`.
+                if let Some(active_handle) = active_handle {
+                    let mouse_pos = ui
+                        .input(|i| i.pointer.hover_pos())
+                        .expect("active_handle implies mouse_pos");
+                    let world_pos = camera_map.screen_to_world(mouse_pos);
+                    match active_handle {
+                        HandleIndex::Dragging(square_index) => {
+                            sim.get_mut(square_index).center = world_pos
+                        }
+                        HandleIndex::Resizing(square_index) => {
+                            // minimize the distance between square.resize_handle() and world_pos.
+                            // square.normal = proj(world_pos - square.center, square.normal)
+                            let square = sim.get_mut(square_index);
+                            square.normal = square.normal
+                                * square.normal.dot(world_pos - square.center)
+                                / square.normal.length_sq();
+                        }
+                        HandleIndex::Rotating(square_index) => {
+                            // minimize the distance between square.rotate_handle() and world_pos.
+                            // new_normal + new_tangent = new_corner;
+                            // new_tangent = Vec2 { x: -new_normal.y, y: new_normal.x }
+                            // Vec2 { x: new_normal.x - new_normal.y, y: new_normal.y + new_normal.x } = new_corner
+                            let square = sim.get_mut(square_index);
+                            let new_corner = (square.normal + square.tangent()).length()
+                                * (world_pos - square.center).normalized().unwrap();
+                            square.normal = (new_corner + new_corner.cw()) / 2.0;
+                        }
+                    }
+                }
 
                 // if the mouse was pressed, set the current interaction to `hovered_handle`.
                 // TODO: should this be on mouse down or mouse press?
@@ -165,6 +248,66 @@ fn main() -> eframe::Result {
                                 INACTIVE_HANDLE_COLOR
                             },
                         ));
+                    }
+                }
+
+                // draw gauss map
+                #[cfg(false)]
+                if draw_gauss_map && let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                    let world_pos = camera_map.screen_to_world(mouse_pos);
+                    for (_, square) in sim.enumerate_squares() {
+                        let closest_point = square.nearest_point(world_pos).inner().0;
+                        if let Some(normal) =
+                            square.gauss_map_offset_radius(world_pos, offset_radius)
+                        {
+                            // ui.painter().arrow(
+                            //     camera_map.world_to_screen(closest_point),
+                            //     camera_map.delta_complex_to_vec2(normal),
+                            //     egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 100, 100)),
+                            // );
+                            ui.painter().arrow(
+                                mouse_pos,
+                                camera_map.delta_complex_to_vec2(normal),
+                                egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 100, 100)),
+                            );
+                            ui.painter().circle(
+                                camera_map.world_to_screen(closest_point),
+                                5.0,
+                                egui::Color32::from_rgb(255, 100, 100),
+                                egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 100, 100)),
+                            );
+                        }
+                    }
+                }
+
+                // highlight the vertices and edges whose blocks contain the mouse
+                if draw_gauss_map && let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                    let world_pos = camera_map.screen_to_world(mouse_pos);
+                    for (_, square) in sim.enumerate_squares() {
+                        for i in 0..4 {
+                            // vertex
+                            if square.vertex_block_contains(offset_radius, i, world_pos) {
+                                ui.painter().circle(
+                                    camera_map.world_to_screen(square.vertices()[i]),
+                                    5.0,
+                                    egui::Color32::from_rgb(100, 255, 100),
+                                    egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 255, 100)),
+                                );
+                            }
+
+                            // edge
+                            if square.edge_block_contains(offset_radius, i, world_pos) {
+                                let v1 = square.vertices()[i];
+                                let v2 = square.vertices()[(i + 1) % 4];
+                                ui.painter().line_segment(
+                                    [
+                                        camera_map.world_to_screen(v1),
+                                        camera_map.world_to_screen(v2),
+                                    ],
+                                    egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 255, 100)),
+                                );
+                            }
+                        }
                     }
                 }
             });
