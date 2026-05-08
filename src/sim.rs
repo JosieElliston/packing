@@ -36,7 +36,7 @@ pub struct Edge {
 
 impl Edge {
     /// `None` if the nearest point is outside the edge segment.
-    fn nearest_point(self, p: Vec2) -> Option<Vec2> {
+    pub fn nearest_point(self, p: Vec2) -> Option<Vec2> {
         let edge_vec = self.to - self.from;
         let to_p = p - self.from;
         let t = to_p.dot(edge_vec) / edge_vec.length_sq();
@@ -47,16 +47,14 @@ impl Edge {
         }
     }
 
+    /// negative if `p` is on the left side of the edge,
+    /// positive if `p` is on the right side of the edge,
+    /// 0 if `p` is on the edge.
     fn signed_distance(self, p: Vec2) -> Coord {
         let edge_vec = self.to - self.from;
-        let normal = Vec2 {
-            x: -edge_vec.y,
-            y: edge_vec.x,
-        }
-        .normalized()
-        .unwrap();
+        let out = edge_vec.cw().normalized();
         let to_p = p - self.from;
-        to_p.dot(normal)
+        to_p.dot(out)
     }
 
     /// basically the nearest point, but can be outside the edge segment.
@@ -137,12 +135,13 @@ pub enum ElementIndex {
 pub struct Square {
     pub center: Vec2,
     pub normal: Vec2,
+    pub ccw: bool,
 }
 
 impl Square {
     pub fn vertices(self) -> [Vec2; 4] {
         let n = self.normal;
-        let t = Vec2 { x: -n.y, y: n.x };
+        let t = self.tangent();
         [
             self.center + n + t,
             self.center + n - t,
@@ -213,7 +212,11 @@ impl Square {
     }
 
     pub fn tangent(self) -> Vec2 {
-        self.normal.ccw()
+        if self.ccw {
+            self.normal.ccw()
+        } else {
+            self.normal.cw()
+        }
     }
 
     /// at the center
@@ -341,60 +344,143 @@ impl Square {
         distance_sq <= offset_radius * offset_radius
     }
 
-    fn after_impulse(self, impulse: SquareImpulse) -> Self {
-        let new_center = self.center + impulse.linear;
-        let new_normal = self.normal
-            + Vec2 {
-                x: -self.normal.y,
-                y: self.normal.x,
-            } * impulse.angular;
-        Self {
-            center: new_center,
-            normal: new_normal,
+    fn after_impulse_builders(
+        self,
+        builders: impl IntoIterator<Item = SquareImpulseBuilder>,
+    ) -> Self {
+        let mut delta = SquareDelta::ZERO;
+        for builder in builders {
+            let (point, impulse) = match builder {
+                SquareImpulseBuilder::Vertex {
+                    vertex_index,
+                    impulse,
+                } => (self.get_vertex(vertex_index), impulse),
+                SquareImpulseBuilder::Edge {
+                    edge_index,
+                    point,
+                    impulse,
+                } => (
+                    self.get_edge(edge_index).nearest_point(point).unwrap(),
+                    impulse,
+                ),
+            };
+            let r = (point - self.center).normalized();
+            // // if |impulse \cdot r| is large, the impulse is mostly linear.
+            // // if |impulse \cdot r| is small, the impulse is mostly rotational.
+            // delta += SquareDelta {
+            //     center_delta: impulse.vector_proj(r),
+            //     normal_delta: impulse.vector_proj(r.ccw()),
+            // };
+            let normal_delta = impulse.vector_proj(r.ccw());
+            let new_normal = (self.normal + normal_delta).normalized() * self.normal.length();
+            let normal_delta = new_normal - self.normal;
+            delta += SquareDelta {
+                // center_delta: impulse - normal_delta,
+                center_delta: impulse,
+                normal_delta,
+            };
+            // todo!("here");
         }
+        self + delta
     }
 
-    fn impulse_on_vertex(self, i: usize, impulse: Vec2) -> SquareImpulse {
-        let vertex = self.get_vertex(i);
-        let r = vertex - self.center;
-        SquareImpulse {
-            linear: impulse,
-            angular: r.x * impulse.y - r.y * impulse.x,
-        }
-    }
+    // fn impulse_on_vertex(self, i: usize, impulse: Vec2) -> SquareImpulse {
+    //     let vertex = self.get_vertex(i);
+    //     let r = vertex - self.center;
+    //     SquareImpulse {
+    //         linear: impulse,
+    //         angular: r.x * impulse.y - r.y * impulse.x,
+    //     }
+    // }
 
-    fn impulse_on_edge(self, i: usize, impulse: Vec2) -> SquareImpulse {
-        let edge = self.get_edge(i);
-        let nearest_point = edge.nearest_point(self.center).unwrap();
-        let r = nearest_point - self.center;
-        SquareImpulse {
-            linear: impulse,
-            angular: r.x * impulse.y - r.y * impulse.x,
-        }
+    // /// point isn't on the edge.
+    // fn impulse_on_edge(self, i: usize, point: Vec2, impulse: Vec2) -> SquareImpulse {
+    //     let edge = self.get_edge(i);
+    //     let nearest_point = edge.nearest_point(point).unwrap();
+    //     let r = nearest_point - self.center;
+    //     SquareImpulse {
+    //         linear: impulse,
+    //         angular: r.x * impulse.y - r.y * impulse.x,
+    //     }
+    // }
+}
+
+// #[derive(Debug, Clone, Copy)]
+// struct SquareImpulse {
+//     linear: Vec2,
+//     angular: Coord,
+// }
+
+// impl ops::AddAssign for SquareImpulse {
+//     fn add_assign(&mut self, rhs: Self) {
+//         self.linear += rhs.linear;
+//         self.angular += rhs.angular;
+//     }
+// }
+
+// impl ops::Add<SquareImpulse> for SquareImpulse {
+//     type Output = Self;
+
+//     fn add(mut self, rhs: Self) -> Self {
+//         self += rhs;
+//         self
+//     }
+// }
+
+#[derive(Debug, Clone, Copy)]
+pub enum SquareImpulseBuilder {
+    Vertex {
+        vertex_index: usize,
+        impulse: Vec2,
+    },
+    Edge {
+        edge_index: usize,
+        point: Vec2,
+        impulse: Vec2,
+    },
+}
+
+struct SquareDelta {
+    center_delta: Vec2,
+    normal_delta: Vec2,
+}
+
+impl SquareDelta {
+    pub const ZERO: Self = Self {
+        center_delta: Vec2::ZERO,
+        normal_delta: Vec2::ZERO,
+    };
+}
+
+impl ops::AddAssign<SquareDelta> for Square {
+    fn add_assign(&mut self, rhs: SquareDelta) {
+        self.center += rhs.center_delta;
+        self.normal += rhs.normal_delta;
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-struct SquareImpulse {
-    linear: Vec2,
-    angular: Coord,
-}
-
-impl ops::Add for SquareImpulse {
+impl ops::Add<SquareDelta> for Square {
     type Output = Self;
 
-    fn add(self, rhs: Self) -> Self {
-        Self {
-            linear: self.linear + rhs.linear,
-            angular: self.angular + rhs.angular,
-        }
+    fn add(mut self, rhs: SquareDelta) -> Self {
+        self += rhs;
+        self
     }
 }
 
-impl ops::AddAssign for SquareImpulse {
-    fn add_assign(&mut self, rhs: Self) {
-        self.linear += rhs.linear;
-        self.angular += rhs.angular;
+impl ops::AddAssign<SquareDelta> for SquareDelta {
+    fn add_assign(&mut self, rhs: SquareDelta) {
+        self.center_delta += rhs.center_delta;
+        self.normal_delta += rhs.normal_delta;
+    }
+}
+
+impl ops::Add<SquareDelta> for SquareDelta {
+    type Output = Self;
+
+    fn add(mut self, rhs: Self) -> Self {
+        self += rhs;
+        self
     }
 }
 
@@ -431,6 +517,7 @@ impl HandleIndex {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Sim {
     // big_square: BigSquare,
     // unit_squares: Vec<UnitSquare>,
@@ -443,16 +530,19 @@ impl Sim {
         Self {
             big_square: Square {
                 center: Vec2::ZERO,
-                normal: Vec2::from_r(2.0),
+                normal: Vec2::from_r(3.0),
+                ccw: false,
             },
             small_squares: vec![
                 Square {
-                    center: Vec2 { x: -0.5, y: -0.5 },
+                    center: Vec2 { x: -0.6, y: -0.6 },
                     normal: Vec2::from_theta(0.1),
+                    ccw: true,
                 },
                 Square {
-                    center: Vec2 { x: 0.5, y: 0.5 },
+                    center: Vec2 { x: 0.6, y: 0.6 },
                     normal: Vec2::from_theta(0.3),
+                    ccw: true,
                 },
             ],
         }
@@ -561,50 +651,117 @@ impl Sim {
 
     /// [OGC](https://graphics.cs.utah.edu/research/projects/ogc/Offset_Geometric_Contact-SIGGRAPH2025.pdf)
     /// https://ankachan.github.io/Projects/VertexBlockDescent/index.html
+    #[cfg(false)]
     pub fn step(&mut self, k_c: Coord, contact_radius: Coord) {
         let mut impulses =
             vec![SquareImpulse::default(); self.small_squares.len()].into_boxed_slice();
 
+        for (i, impulse) in impulses.into_iter().enumerate() {
+            self.small_squares[i] = self.small_squares[i].after_impulse(impulse);
+        }
+    }
+
+    pub fn get_impulse_builders(&self) -> Box<[Vec<SquareImpulseBuilder>]> {
+        let mut builders = (0..self.small_squares.len())
+            .map(|_| Vec::new())
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+
         for (square_index, square) in self.enumerate_squares() {
-            let vertices = square.vertices();
-            for (vertex_i, vertex) in vertices.into_iter().enumerate() {
-                for (other_square_index, element_index) in
-                    self.contact_element_set(contact_radius, vertex)
-                {
+            for (vertex_i, vertex) in square.vertices().into_iter().enumerate() {
+                for (other_square_index, element_index) in self.contact_element_set(0.5, vertex) {
                     let other_square = self.get(other_square_index);
                     let signed_distance = match element_index {
                         ElementIndex::Vertex(i) => other_square.get_vertex(i).distance(vertex),
-                        ElementIndex::Edge(i) => other_square.get_edge(i).signed_distance(vertex),
+                        ElementIndex::Edge(i) => -other_square.get_edge(i).signed_distance(vertex),
                     };
-                    let energy = Self::activation(k_c, signed_distance.abs(), contact_radius);
                     let normal = (match element_index {
                         ElementIndex::Vertex(i) => other_square.get_vertex(i),
                         ElementIndex::Edge(i) => {
                             other_square.get_edge(i).perpendicular_foot(vertex)
                         }
                     } - vertex)
-                        .normalized()
-                        .unwrap();
-                    let impulse = normal * energy;
+                        .normalized();
                     if let SquareIndex::Small(i) = square_index {
-                        impulses[i] += square.impulse_on_vertex(vertex_i, impulse);
+                        builders[i].push(SquareImpulseBuilder::Vertex {
+                            vertex_index: vertex_i,
+                            impulse: -normal * signed_distance,
+                        });
+                    }
+                    if let SquareIndex::Small(i) = other_square_index {
+                        match element_index {
+                            ElementIndex::Vertex(vertex_i) => {
+                                builders[i].push(SquareImpulseBuilder::Vertex {
+                                    vertex_index: vertex_i,
+                                    impulse: normal * signed_distance,
+                                });
+                            }
+                            ElementIndex::Edge(edge_i) => {
+                                // builders[i].push(SquareImpulseBuilder::Edge {
+                                //     i: edge_i,
+                                //     point: vertex,
+                                //     impulse: normal * signed_distance,
+                                // });
+                            }
+                        }
                     }
                 }
-                // self.contact_element_set(contact_radius, vertex)
-                //     .map(|(square_index, element_index)| {
-                //         let square = self.get(square_index);
-                //         let distance = match element_index {
-                //             ElementIndex::Vertex(i) => square.get_vertex(i).distance(vertex),
-                //             ElementIndex::Edge(i) => square.get_edge(i).distance(vertex),
-                //         };
-                //         Self::activation(k_c, distance, contact_radius)
-                //     })
-                //     .sum()
             }
         }
 
-        for (i, impulse) in impulses.into_iter().enumerate() {
-            self.small_squares[i] = self.small_squares[i].after_impulse(impulse);
+        builders
+    }
+
+    #[cfg(false)]
+    pub fn build_impulses(&self, builders: &[Vec<SquareImpulseBuilder>]) -> Box<[SquareImpulse]> {
+        (self.small_squares.iter().zip(builders.iter()))
+            .map(|(square, builders)| {
+                let mut impulse = SquareImpulse::default();
+                for &builder in builders {
+                    match builder {
+                        SquareImpulseBuilder::Vertex {
+                            i,
+                            impulse: vertex_impulse,
+                        } => {
+                            impulse += square.impulse_on_vertex(i, vertex_impulse);
+                        }
+                        SquareImpulseBuilder::Edge {
+                            i,
+                            point,
+                            impulse: edge_impulse,
+                        } => {
+                            impulse += square.impulse_on_edge(i, point, edge_impulse);
+                        }
+                    }
+                }
+                impulse
+            })
+            .collect()
+    }
+
+    pub fn apply_impulse_builders(&mut self, builders: &[Vec<SquareImpulseBuilder>]) {
+        assert_eq!(self.small_squares.len(), builders.len());
+        for (square, square_builders) in self.small_squares.iter_mut().zip(builders.iter()) {
+            // let mut impulse = SquareImpulse::ZERO;
+            // for &builder in square_builders {
+            //     match builder {
+            //         SquareImpulseBuilder::Vertex {
+            //             vertex_index: i,
+            //             impulse: vertex_impulse,
+            //         } => {
+            //             impulse += square.impulse_on_vertex(i, vertex_impulse);
+            //         }
+            //         SquareImpulseBuilder::Edge {
+            //             edge_index: i,
+            //             point,
+            //             impulse: edge_impulse,
+            //         } => {
+            //             impulse += square.impulse_on_edge(i, point, edge_impulse);
+            //         }
+            //     }
+            // }
+            // *square = square.after_impulse_builders(impulse);
+            *square = square.after_impulse_builders(square_builders.iter().cloned());
         }
     }
 }

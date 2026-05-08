@@ -2,7 +2,7 @@ use std::ops;
 
 pub type Coord = f64;
 
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Vec2 {
     pub x: Coord,
     pub y: Coord,
@@ -32,7 +32,7 @@ impl Vec2 {
     }
 
     pub fn from_r_theta(r: Coord, theta: Coord) -> Self {
-        assert!(r >= 0.0, "not strictly needed but probably a bug");
+        // assert!(r >= 0.0, "not strictly needed but probably a bug");
         use std::f64::consts::PI;
         assert!(
             (-2.0 * PI..=2.0 * PI).contains(&theta),
@@ -52,6 +52,14 @@ impl Vec2 {
     /// with length 1.
     pub fn from_theta(theta: Coord) -> Self {
         Self::from_r_theta(1.0, theta)
+    }
+
+    #[doc(alias = "angle")]
+    #[doc(alias = "theta")]
+    #[doc(alias = "atan2")]
+    #[doc(alias = "phase")]
+    pub fn arg(self) -> Coord {
+        self.y.atan2(self.x)
     }
 
     pub fn dot(self, rhs: Self) -> Coord {
@@ -75,9 +83,20 @@ impl Vec2 {
     }
 
     /// `None` if the length is zero.
-    pub fn normalized(self) -> Option<Self> {
-        let len = self.length();
-        if len == 0.0 { None } else { Some(self / len) }
+    pub fn normalized_checked(self) -> Result<Self, &'static str> {
+        let length = self.length();
+        if length == 0.0 {
+            Err("cannot normalize zero-length vector")
+        } else {
+            Ok(self / length)
+        }
+    }
+
+    /// probably won't panic on `length == 0` in release.
+    pub fn normalized(self) -> Self {
+        let length = self.length();
+        debug_assert_ne!(length, 0.0, "cannot normalize zero-length vector");
+        self / length
     }
 
     /// rotated 90 degrees counterclockwise.
@@ -94,6 +113,16 @@ impl Vec2 {
             x: self.y,
             y: -self.x,
         }
+    }
+
+    /// scalar projection of `self` onto `rhs`.
+    pub fn scalar_proj(self, rhs: Self) -> Coord {
+        self.dot(rhs) / rhs.length()
+    }
+
+    /// vector projection of `self` onto `rhs`.
+    pub fn vector_proj(self, rhs: Self) -> Self {
+        rhs * (self.dot(rhs) / rhs.length_sq())
     }
 }
 

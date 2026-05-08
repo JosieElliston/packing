@@ -78,7 +78,9 @@ fn main() -> eframe::Result {
                             );
 
                             if ui.button("step").clicked() {
-                                sim.step(k_c, offset_radius);
+                                // sim.step(k_c, offset_radius);
+                                let impulses = sim.get_impulse_builders();
+                                sim.apply_impulse_builders(&impulses);
                             }
                         });
 
@@ -148,7 +150,7 @@ fn main() -> eframe::Result {
                             // Vec2 { x: new_normal.x - new_normal.y, y: new_normal.y + new_normal.x } = new_corner
                             let square = sim.get_mut(square_index);
                             let new_corner = (square.normal + square.tangent()).length()
-                                * (world_pos - square.center).normalized().unwrap();
+                                * (world_pos - square.center).normalized();
                             square.normal = (new_corner + new_corner.cw()) / 2.0;
                         }
                     }
@@ -309,6 +311,71 @@ fn main() -> eframe::Result {
                             }
                         }
                     }
+                }
+
+                // draw impulses
+                {
+                    let impulse_builders = sim.get_impulse_builders();
+                    for (square, impulses) in sim.small_squares.iter().zip(impulse_builders.iter())
+                    {
+                        for &builder in impulses {
+                            match builder {
+                                SquareImpulseBuilder::Vertex {
+                                    vertex_index: i,
+                                    impulse,
+                                } => {
+                                    // arrow from square.vertex(i) in the direction of impulse.
+                                    let vertex = square.vertices()[i];
+                                    ui.painter().arrow(
+                                        camera_map.world_to_screen(vertex),
+                                        camera_map.delta_complex_to_vec2(impulse),
+                                        egui::Stroke::new(
+                                            2.0,
+                                            egui::Color32::from_rgb(255, 100, 100),
+                                        ),
+                                    );
+                                }
+                                SquareImpulseBuilder::Edge {
+                                    edge_index: i,
+                                    point,
+                                    impulse,
+                                } => {
+                                    // arrow from the nearest point on the edge to `point` in the direction of impulse.
+                                    let edge = square.get_edge(i);
+                                    let nearest_point = edge.nearest_point(point).unwrap();
+                                    ui.painter().arrow(
+                                        camera_map.world_to_screen(nearest_point),
+                                        camera_map.delta_complex_to_vec2(impulse),
+                                        egui::Stroke::new(
+                                            2.0,
+                                            egui::Color32::from_rgb(255, 100, 100),
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    let stepped = {
+                        let mut sim = sim.clone();
+                        sim.apply_impulse_builders(&impulse_builders);
+                        sim
+                    };
+                    // draw stepped as ghosts
+                    stepped.enumerate_squares().for_each(|(i, square)| {
+                        let vertices = square.vertices().map(|v| camera_map.world_to_screen(v));
+                        ui.painter().add(egui::Shape::convex_polygon(
+                            vertices.to_vec(),
+                            egui::Color32::TRANSPARENT,
+                            egui::epaint::PathStroke {
+                                width: 2.0,
+                                color: eframe::epaint::ColorMode::Solid(
+                                    egui::Color32::from_rgba_unmultiplied(255, 100, 100, 100),
+                                ),
+                                kind: egui::StrokeKind::Middle,
+                            },
+                        ));
+                    });
                 }
             });
         },
