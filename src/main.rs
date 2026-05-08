@@ -2,7 +2,10 @@ mod camera;
 mod point;
 mod sim;
 
-use eframe::egui;
+use eframe::egui::{
+    self,
+    ahash::{HashSet, HashSetExt},
+};
 
 use crate::{camera::*, sim::*};
 
@@ -37,173 +40,110 @@ fn main() -> eframe::Result {
             egui::CentralPanel::default().show_inside(ui, |ui| {
                 let camera_map = CameraMap::new(ui.available_rect_before_wrap(), camera);
 
-                // square outlines
-                {
-                    // big square
-                    {
-                        ui.painter().add(egui::Shape::closed_line(
-                            sim.big_square
-                                .vertices()
-                                .map(|v| camera_map.world_to_screen(v))
-                                .to_vec(),
-                            egui::Stroke {
-                                width: 2.0,
-                                color: egui::Color32::WHITE,
-                            },
-                        ));
-                    }
+                /// in egui coords.
+                const HOVERED_HANDLE_RADIUS: f32 = 7.0;
+                /// in egui coords.
+                const UNHOVERED_HANDLE_RADIUS: f32 = 4.0;
 
-                    // small squares
-                    for square in &sim.small_squares {
-                        ui.painter().add(egui::Shape::closed_line(
-                            square
-                                .vertices()
-                                .map(|v| camera_map.world_to_screen(v))
-                                .to_vec(),
-                            egui::Stroke {
+                // if the mouse is up, clear the current `active_handle`.
+                if !ui.input(|i| i.pointer.primary_down()) {
+                    active_handle = None;
+                }
+
+                // if there is an `active_handle`, the hovered handle is the `active_handle`.
+                // otherwise, take the handle nearest to the mouse that's inside `HOVERED_HANDLE_RADIUS`.
+                let hovered_handle = if let Some(active_handle) = active_handle {
+                    Some(active_handle)
+                } else {
+                    ui.input(|i| i.pointer.hover_pos()).and_then(|mouse_pos| {
+                        sim.enumerate_handles()
+                            .map(|(i, handle_world_pos)| {
+                                let handle_screen_pos =
+                                    camera_map.world_to_screen(handle_world_pos);
+                                let dist_sq = handle_screen_pos.distance_sq(mouse_pos);
+                                (i, dist_sq)
+                            })
+                            .filter(|(i, dist_sq)| {
+                                *dist_sq <= HOVERED_HANDLE_RADIUS * HOVERED_HANDLE_RADIUS
+                            })
+                            .min_by(|(_, lhs), (_, rhs)| lhs.partial_cmp(rhs).unwrap())
+                            .map(|(i, _dist_sq)| i)
+                    })
+                };
+
+                // if the mouse was pressed, set the current interaction to `hovered_handle`.
+                // TODO: should this be on mouse down or mouse press?
+                if ui.input(|i| i.pointer.primary_pressed()) {
+                    assert!(active_handle.is_none(), "mouse is up and down");
+                    active_handle = hovered_handle;
+                }
+
+                // the squares containing the mouse
+                // TODO: rename
+                let hovered_squares = ui
+                    .input(|i| i.pointer.hover_pos())
+                    .map(|mouse_pos| {
+                        sim.enumerate_squares()
+                            .filter(|(_, square)| {
+                                square.contains(camera_map.screen_to_world(mouse_pos))
+                            })
+                            .map(|(i, _)| i)
+                            .collect()
+                    })
+                    .unwrap_or(HashSet::new());
+
+                // draw squares (fill and stroke)
+                {
+                    /// if the mouse is inside this square.
+                    /// multiple squares can have this.
+                    /// this is the color of the fill.
+                    const HOVERED_INTERIOR_FILL_COLOR: egui::Color32 =
+                        egui::Color32::from_rgba_unmultiplied_const(150, 150, 150, 20);
+                    const UNHOVERED_INTERIOR_FILL_COLOR: egui::Color32 = egui::Color32::TRANSPARENT;
+
+                    /// if the hovered handle belongs to this square.
+                    /// at most one square can have this.
+                    /// this is the color of the stroke.
+                    // TODO: maybe also have a color for the `active_handle`.
+                    const HOVERED_HANDLE_STROKE_COLOR: egui::Color32 =
+                        egui::Color32::from_gray(255);
+                    const UNHOVERED_HANDLE_STROKE_COLOR: egui::Color32 =
+                        egui::Color32::from_gray(150);
+
+                    // TODO: shade / highlight illegal overlaps.
+
+                    for (i, square) in sim.enumerate_squares() {
+                        let vertices = square.vertices().map(|v| camera_map.world_to_screen(v));
+                        ui.painter().add(egui::Shape::convex_polygon(
+                            vertices.to_vec(),
+                            if i != SquareIndex::Big && hovered_squares.contains(&i) {
+                                HOVERED_INTERIOR_FILL_COLOR
+                            } else {
+                                UNHOVERED_INTERIOR_FILL_COLOR
+                            },
+                            egui::epaint::PathStroke {
                                 width: 2.0,
-                                color: egui::Color32::WHITE,
+                                color: eframe::epaint::ColorMode::Solid(
+                                    if let Some(hovered_handle) = hovered_handle
+                                        && hovered_handle.square_index() == i
+                                    {
+                                        HOVERED_HANDLE_STROKE_COLOR
+                                    } else {
+                                        UNHOVERED_HANDLE_STROKE_COLOR
+                                    },
+                                ),
+                                kind: egui::StrokeKind::Middle,
                             },
                         ));
                     }
                 }
 
-                // interaction handles
+                // draw the interaction handles (on top of the squares)
                 {
-                    /// in egui coords.
-                    const HOVERED_HANDLE_RADIUS: f32 = 7.0;
-                    /// in egui coords.
-                    const UNHOVERED_HANDLE_RADIUS: f32 = 3.0;
-
-                    // note that active kinda implies hovered, but due to frame stuff it might not actually be hovered,
-                    // so we need to persist the active handle across frames.
-
-                    // `None` if no handles are inside `ACTIVE_HANDLE_RADIUS`.
-                    // if multiple handles are inside `ACTIVE_HANDLE_RADIUS`, take the nearest.
-                    let nearest_handle =
-                        ui.input(|i| i.pointer.hover_pos()).and_then(|mouse_pos| {
-                            // // TODO: only compute if there isn't an active handle?
-                            // // TODO: refactor this
-                            // let drag_handle = sim
-                            //     .enumerate()
-                            //     .map(|(i, square)| {
-                            //         (i, camera_map.world_to_screen(square.drag_handle()))
-                            //     })
-                            //     .filter(|(i, screen_pos)| {
-                            //         screen_pos.distance(mouse_pos) <= HOVERED_HANDLE_RADIUS
-                            //     })
-                            //     .min_by(|(_, screen_pos_lhs), (_, screen_pos_rhs)| {
-                            //         let dist_sq_lhs = screen_pos_lhs.distance_sq(mouse_pos);
-                            //         let dist_sq_rhs = screen_pos_rhs.distance_sq(mouse_pos);
-                            //         dist_sq_lhs.partial_cmp(&dist_sq_rhs).unwrap()
-                            //     });
-
-                            // let resize_handle = sim
-                            //     .enumerate()
-                            //     .map(|(i, square)| {
-                            //         (i, camera_map.world_to_screen(square.resize_handle()))
-                            //     })
-                            //     .filter(|(i, screen_pos)| {
-                            //         screen_pos.distance(mouse_pos) <= HOVERED_HANDLE_RADIUS
-                            //     })
-                            //     .min_by(|(_, screen_pos_lhs), (_, screen_pos_rhs)| {
-                            //         let dist_sq_lhs = screen_pos_lhs.distance_sq(mouse_pos);
-                            //         let dist_sq_rhs = screen_pos_rhs.distance_sq(mouse_pos);
-                            //         dist_sq_lhs.partial_cmp(&dist_sq_rhs).unwrap()
-                            //     });
-
-                            // let rotate_handle = sim
-                            //     .enumerate()
-                            //     .map(|(i, square)| {
-                            //         (i, camera_map.world_to_screen(square.rotate_handle()))
-                            //     })
-                            //     .filter(|(i, screen_pos)| {
-                            //         screen_pos.distance(mouse_pos) <= HOVERED_HANDLE_RADIUS
-                            //     })
-                            //     .min_by(|(_, screen_pos_lhs), (_, screen_pos_rhs)| {
-                            //         let dist_sq_lhs = screen_pos_lhs.distance_sq(mouse_pos);
-                            //         let dist_sq_rhs = screen_pos_rhs.distance_sq(mouse_pos);
-                            //         dist_sq_lhs.partial_cmp(&dist_sq_rhs).unwrap()
-                            //     });
-
-                            // match (drag_handle, rotate_handle) {
-                            //     (
-                            //         Some((drag_i, drag_screen_pos)),
-                            //         Some((rotate_i, rotate_screen_pos)),
-                            //     ) => {
-                            //         if drag_screen_pos.distance_sq(mouse_pos)
-                            //             <= rotate_screen_pos.distance_sq(mouse_pos)
-                            //         {
-                            //             Some(Interaction::Dragging(drag_i))
-                            //         } else {
-                            //             Some(Interaction::Rotating(rotate_i))
-                            //         }
-                            //     }
-                            //     (Some((drag_i, drag_screen_pos)), None) => {
-                            //         Some(Interaction::Dragging(drag_i))
-                            //     }
-                            //     (None, Some((rotate_i, rotate_screen_pos))) => {
-                            //         Some(Interaction::Rotating(rotate_i))
-                            //     }
-                            //     (None, None) => None,
-                            // }
-
-                            // let mut best = drag_handle;
-                            // if let Some((resize_i, resize_screen_pos)) = resize_handle {
-                            //     if let Some((best_i, best_screen_pos)) = best {
-                            //         if resize_screen_pos.distance_sq(mouse_pos)
-                            //             <= best_screen_pos.distance_sq(mouse_pos)
-                            //         {
-                            //             Some((resize_i, resize_screen_pos))
-                            //         } else {
-                            //             best
-                            //         }
-                            //     } else {
-                            //         Some((resize_i, resize_screen_pos))
-                            //     }
-                            // } else {
-                            //     best
-                            // };
-
-                            // best
-                            // nearest_handle, nearest_screen_pos
-
-                            sim.enumerate_handles()
-                                .map(|(i, handle_world_pos)| {
-                                    let handle_screen_pos =
-                                        camera_map.world_to_screen(handle_world_pos);
-                                    let dist_sq = handle_screen_pos.distance_sq(mouse_pos);
-                                    (i, dist_sq)
-                                })
-                                .filter(|(i, dist_sq)| {
-                                    *dist_sq <= HOVERED_HANDLE_RADIUS * HOVERED_HANDLE_RADIUS
-                                })
-                                .min_by(|(_, lhs), (_, rhs)| lhs.partial_cmp(rhs).unwrap())
-                                .map(|(i, _dist_sq)| i)
-                        });
-
-                    // if the mouse is up, clear the current interaction.
-                    if !ui.input(|i| i.pointer.primary_down()) {
-                        active_handle = None;
-                    }
-
-                    // if the mouse was pressed, set the current interaction to `nearest_handle`.
-                    if ui.input(|i| i.pointer.primary_pressed()) {
-                        assert!(active_handle.is_none(), "mouse is up and down");
-                        active_handle = nearest_handle;
-                    }
-
-                    // override the nearest_handle with the active_handle.
-                    // it's possibly that the handle that's nearest to the mouse isn't the one we're dragging,
-                    // but for the upcoming logic, we want to pretend that it is.
-                    let nearest_handle = if let Some(active_handle) = active_handle {
-                        Some(active_handle)
-                    } else {
-                        nearest_handle
-                    };
-
-                    const ACTIVE_HANDLE_COLOR: egui::Color32 = egui::Color32::WHITE;
-                    const INACTIVE_HANDLE_COLOR: egui::Color32 = egui::Color32::GRAY;
+                    const ACTIVE_HANDLE_COLOR: egui::Color32 =
+                        egui::Color32::from_rgb(150, 150, 255);
+                    const INACTIVE_HANDLE_COLOR: egui::Color32 =
+                        egui::Color32::from_rgb(100, 100, 200);
 
                     // draw the handles.
                     // if it's inactive, draw it gray and small.
@@ -214,7 +154,7 @@ fn main() -> eframe::Result {
 
                         ui.painter().add(egui::Shape::circle_filled(
                             screen_pos,
-                            if Some(i) == nearest_handle {
+                            if Some(i) == hovered_handle {
                                 HOVERED_HANDLE_RADIUS
                             } else {
                                 UNHOVERED_HANDLE_RADIUS
@@ -226,31 +166,7 @@ fn main() -> eframe::Result {
                             },
                         ));
                     }
-
-                    // // draw the rotation handles.
-                    // // if it's inactive, draw it gray and small.
-                    // // if it's hovered but inactive, draw it gray and big.
-                    // // if it's active, draw it white and big.
-                    // for (i, square) in sim.enumerate() {
-                    //     let screen_pos = camera_map.world_to_screen(square.rotate_handle());
-
-                    //     ui.painter().add(egui::Shape::circle_filled(
-                    //         screen_pos,
-                    //         if Some(HandleIndex::Rotating(i)) == nearest_handle {
-                    //             HOVERED_HANDLE_RADIUS
-                    //         } else {
-                    //             UNHOVERED_HANDLE_RADIUS
-                    //         },
-                    //         if Some(HandleIndex::Rotating(i)) == active_handle {
-                    //             ACTIVE_HANDLE_COLOR
-                    //         } else {
-                    //             INACTIVE_HANDLE_COLOR
-                    //         },
-                    //     ));
-                    // }
                 }
-
-                // TODO: shade / highlight squares if the mouse is inside them
             });
         },
     )

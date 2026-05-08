@@ -65,6 +65,31 @@ impl Square {
         AABB { lo, hi }
     }
 
+    pub fn rad(self) -> Coord {
+        self.normal.length()
+    }
+
+    // TODO: do this faster
+    pub fn contains(self, p: Vec2) -> bool {
+        let vertices = self.vertices();
+        let mut sign = 0;
+        for i in 0..4 {
+            let a = vertices[i];
+            let b = vertices[(i + 1) % 4];
+            let edge = b - a;
+            let to_p = p - a;
+            let cross = edge.x * to_p.y - edge.y * to_p.x;
+            if cross != 0.0 {
+                if sign == 0 {
+                    sign = if cross > 0.0 { 1 } else { -1 };
+                } else if (cross > 0.0 && sign < 0) || (cross < 0.0 && sign > 0) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
     /// at the center
     pub fn drag_handle(self) -> Vec2 {
         self.center
@@ -98,17 +123,25 @@ impl Square {
 //     normal: Vec2,
 // }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SquareIndex {
     Big,
     Small(usize),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HandleIndex {
     Dragging(SquareIndex),
     Resizing(SquareIndex),
     Rotating(SquareIndex),
+}
+
+impl HandleIndex {
+    pub fn square_index(self) -> SquareIndex {
+        match self {
+            HandleIndex::Dragging(i) | HandleIndex::Resizing(i) | HandleIndex::Rotating(i) => i,
+        }
+    }
 }
 
 pub struct Sim {
@@ -145,30 +178,23 @@ impl Sim {
         }
     }
 
-    // pub fn enumerate(&self) -> impl Iterator<Item = (SquareIndex, &Square)> {
-    //     std::iter::once((SquareIndex::Big, &self.big_square)).chain(
-    //         self.small_squares
-    //             .iter()
-    //             .enumerate()
-    //             .map(|(i, square)| (SquareIndex::Small(i), square)),
-    //     )
-    // }
+    pub fn enumerate_squares(&self) -> impl Iterator<Item = (SquareIndex, &Square)> {
+        std::iter::once((SquareIndex::Big, &self.big_square)).chain(
+            self.small_squares
+                .iter()
+                .enumerate()
+                .map(|(i, square)| (SquareIndex::Small(i), square)),
+        )
+    }
 
     pub fn enumerate_handles(&self) -> impl Iterator<Item = (HandleIndex, Vec2)> {
-        std::iter::once((SquareIndex::Big, &self.big_square))
-            .chain(
-                self.small_squares
-                    .iter()
-                    .enumerate()
-                    .map(|(i, square)| (SquareIndex::Small(i), square)),
-            )
-            .flat_map(|(i, square)| {
-                [
-                    (HandleIndex::Dragging(i), square.drag_handle()),
-                    (HandleIndex::Resizing(i), square.resize_handle()),
-                    (HandleIndex::Rotating(i), square.rotate_handle()),
-                ]
-            })
+        self.enumerate_squares().flat_map(|(i, square)| {
+            [
+                (HandleIndex::Dragging(i), square.drag_handle()),
+                (HandleIndex::Resizing(i), square.resize_handle()),
+                (HandleIndex::Rotating(i), square.rotate_handle()),
+            ]
+        })
     }
 
     fn resolve(&mut self) {}
